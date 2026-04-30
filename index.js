@@ -19,9 +19,15 @@ const CAMPAIGNS_DIR = path.join(DATA_DIR, 'campaigns');
 const HISTORY_DIR = path.join(DATA_DIR, 'history');
 const USERS_FILE = path.join(DATA_DIR, 'users.json');
 
-// Ensure directories exist
+// Ensure directories exist with robustness
 [DATA_DIR, SESSIONS_DIR, CAMPAIGNS_DIR, HISTORY_DIR].forEach(dir => {
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    try {
+        if (!fs.existsSync(dir)) {
+            fs.mkdirSync(dir, { recursive: true });
+        }
+    } catch (err) {
+        console.warn(`Warning: Could not create/access directory ${dir}. System might be read-only or permission restricted.`, err.message);
+    }
 });
 if (!fs.existsSync(USERS_FILE)) fs.writeFileSync(USERS_FILE, JSON.stringify({}));
 
