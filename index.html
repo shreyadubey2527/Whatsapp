@@ -177,10 +177,10 @@
         <div class="glass card auth-box">
             <h2>WhatsApp Agent Pro</h2>
             <p>Login to your workspace</p>
-            <input type="text" id="auth-user" placeholder="Username" required>
-            <input type="password" id="auth-pass" placeholder="Password" required>
-            <button onclick="login()" style="width: 100%; margin-bottom: 12px;">Login</button>
-            <button onclick="register()" class="secondary" style="width: 100%;">Create Account</button>
+            <input type="text" id="auth-user" placeholder="Username" required onkeypress="if(event.key==='Enter') login()">
+            <input type="password" id="auth-pass" placeholder="Password" required onkeypress="if(event.key==='Enter') login()">
+            <button id="btn-login" onclick="login()" style="width: 100%; margin-bottom: 12px;">Login</button>
+            <button id="btn-register" onclick="register()" class="secondary" style="width: 100%;">Create Account</button>
         </div>
     </div>
 
@@ -455,6 +455,12 @@
         async function login() {
             const u = document.getElementById('auth-user').value;
             const p = document.getElementById('auth-pass').value;
+            if (!u || !p) return toast('Username and password required', 'error');
+            
+            const btn = document.getElementById('btn-login');
+            btn.innerText = 'Logging in...';
+            btn.disabled = true;
+            
             try {
                 const res = await fetch(`${API}/auth/login`, {
                     method: 'POST', headers:{'Content-Type':'application/json'},
@@ -467,11 +473,18 @@
                 hideAuth();
                 toast('Logged in successfully');
             } catch (err) { toast(err.message, 'error'); }
+            finally { btn.innerText = 'Login'; btn.disabled = false; }
         }
 
         async function register() {
             const u = document.getElementById('auth-user').value;
             const p = document.getElementById('auth-pass').value;
+            if (!u || !p) return toast('Username and password required', 'error');
+
+            const btn = document.getElementById('btn-register');
+            btn.innerText = 'Registering...';
+            btn.disabled = true;
+
             try {
                 const res = await fetch(`${API}/auth/register`, {
                     method: 'POST', headers:{'Content-Type':'application/json'},
@@ -484,6 +497,7 @@
                 hideAuth();
                 toast('Account created');
             } catch (err) { toast(err.message, 'error'); }
+            finally { btn.innerText = 'Create Account'; btn.disabled = false; }
         }
 
         function logout() {
