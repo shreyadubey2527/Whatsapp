@@ -1,0 +1,8 @@
+node_modules/
+data/sessions/
+data/campaigns/
+data/history/
+data/users.json
+*.log
+.DS_Store
+.env
