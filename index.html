@@ -230,7 +230,8 @@
                 <div class="glass card">
                     <h3>1. Import Contacts</h3>
                     <div style="display: flex; gap: 8px; margin-bottom: 8px;">
-                        <button onclick="document.getElementById('contact-file').click()" style="flex:1">Upload File</button>
+                        <button id="btn-upload-file" style="flex:1">Upload File</button>
+                        <button onclick="downloadSample()" class="secondary" style="flex:1">Sample Excel</button>
                         <button onclick="togglePasteArea()" class="secondary" style="flex:1">Manual Paste</button>
                     </div>
                     <input type="file" id="contact-file" accept=".xlsx, .xls, .csv" style="display:none">
@@ -566,39 +567,95 @@
             } catch(e) { toast(e.message, 'error'); }
         }
 
+        // File Upload Trigger
+        document.getElementById('btn-upload-file').addEventListener('click', () => {
+            document.getElementById('contact-file').click();
+        });
+
+        function downloadSample() {
+            const data = [
+                { "Name": "John Doe", "Phone": "919876543210" },
+                { "Name": "Jane Smith", "Phone": "919876543211" }
+            ];
+            const ws = XLSX.utils.json_to_sheet(data);
+            const wb = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(wb, ws, "Contacts");
+            XLSX.writeFile(wb, "whatsapp_contacts_sample.xlsx");
+        }
+
         // File Parsing
         document.getElementById('contact-file').addEventListener('change', function(e) {
             const file = e.target.files[0];
             if (!file) return;
+            
+            if (typeof XLSX === 'undefined') {
+                toast("Excel library not loaded. Please check your internet connection.", "error");
+                return;
+            }
+
             const reader = new FileReader();
             reader.onload = function(evt) {
                 try {
-                    const data = evt.target.result;
-                    const workbook = XLSX.read(data, {type: 'binary'});
-                    const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
-                    const json = XLSX.utils.sheet_to_json(firstSheet);
+                    const data = new Uint8Array(evt.target.result);
+                    const workbook = XLSX.read(data, {type: 'array'});
+                    const firstSheetName = workbook.SheetNames[0];
+                    const firstSheet = workbook.Sheets[firstSheetName];
+                    const json = XLSX.utils.sheet_to_json(firstSheet, { defval: "" });
                     
-                    // improved phone column detection
-                    contactsData = json.filter(r => {
-                        const keys = Object.keys(r).map(k => k.toLowerCase());
-                        return keys.some(k => k.includes('phone') || k.includes('number') || k.includes('mobile') || k.includes('contact') || k.includes('whatsapp'));
-                    }).map(r => {
+                    if (json.length === 0) {
+                        toast("The file seems to be empty.", "error");
+                        return;
+                    }
+
+                    // Improved phone column detection
+                    const possibleKeys = ['phone', 'number', 'mobile', 'contact', 'whatsapp', 'p_number', 'phone_number'];
+                    
+                    let parsedContacts = json.map(r => {
+                        // Find the first key that matches our patterns
                         const phoneKey = Object.keys(r).find(k => {
-                            const lk = k.toLowerCase();
-                            return lk.includes('phone') || lk.includes('number') || lk.includes('mobile') || lk.includes('contact') || lk.includes('whatsapp');
+                            const lk = k.toLowerCase().replace(/[\s_-]/g, '');
+                            return possibleKeys.some(pk => lk.includes(pk));
                         });
-                        let obj = { ...r, phone: r[phoneKey].toString().replace(/\D/g, '') };
-                        return obj;
-                    });
-                    
-                    document.getElementById('contact-count').innerText = `${contactsData.length} contacts loaded`;
-                    renderContactPreview();
-                    toast(`Parsed ${contactsData.length} contacts`);
+
+                        if (phoneKey && r[phoneKey]) {
+                            const phone = r[phoneKey].toString().replace(/\D/g, '');
+                            if (phone.length >= 5) { // Basic sanity check for phone length
+                                return { ...r, phone: phone };
+                            }
+                        }
+                        return null;
+                    }).filter(c => c !== null);
+
+                    if (parsedContacts.length === 0) {
+                        // Fallback: search for any field that looks like a phone number (7+ digits)
+                        parsedContacts = json.map(r => {
+                            const anyPhoneKey = Object.keys(r).find(k => {
+                                const val = r[k].toString().replace(/\D/g, '');
+                                return val.length >= 10 && val.length <= 15;
+                            });
+                            if (anyPhoneKey) {
+                                return { ...r, phone: r[anyPhoneKey].toString().replace(/\D/g, '') };
+                            }
+                            return null;
+                        }).filter(c => c !== null);
+                    }
+
+                    if (parsedContacts.length === 0) {
+                        toast("No valid phone numbers found. Ensure your column header contains 'phone' or 'number'.", "error");
+                    } else {
+                        contactsData = parsedContacts;
+                        document.getElementById('contact-count').innerText = `${contactsData.length} contacts loaded`;
+                        renderContactPreview();
+                        toast(`Successfully parsed ${contactsData.length} contacts`);
+                    }
                 } catch(err) {
-                    toast("Failed to parse file. Ensure it's a valid Excel/CSV.", "error");
+                    console.error("Parse Error:", err);
+                    toast("Failed to parse file: " + err.message, "error");
                 }
+                // Reset file input so same file can be uploaded again
+                e.target.value = '';
             };
-            reader.readAsBinaryString(file);
+            reader.readAsArrayBuffer(file);
         });
 
         function renderContactPreview() {
