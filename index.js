@@ -7,9 +7,11 @@ const crypto = require('crypto');
 const qrcode = require('qrcode');
 const http = require('http');
 
+const cors = require('cors');
 const app = express();
 const server = http.createServer(app);
 
+app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.static(__dirname)); // Serve index.html and static assets
 
@@ -26,10 +28,17 @@ const USERS_FILE = path.join(DATA_DIR, 'users.json');
             fs.mkdirSync(dir, { recursive: true });
         }
     } catch (err) {
-        console.warn(`Warning: Could not create/access directory ${dir}. System might be read-only or permission restricted.`, err.message);
+        console.warn(`Warning: Could not create/access directory ${dir}.`, err.message);
     }
 });
-if (!fs.existsSync(USERS_FILE)) fs.writeFileSync(USERS_FILE, JSON.stringify({}));
+
+try {
+    if (!fs.existsSync(USERS_FILE)) {
+        fs.writeFileSync(USERS_FILE, JSON.stringify({}));
+    }
+} catch (err) {
+    console.error(`Critical Error: Could not initialize users file ${USERS_FILE}.`, err.message);
+}
 
 // In-memory states
 const userSockets = {};
