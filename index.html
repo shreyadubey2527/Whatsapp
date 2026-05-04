@@ -91,7 +91,6 @@
             padding: 12px 16px;
             border-radius: 8px;
             font-family: inherit;
-            margin-bottom: 16px;
             outline: none;
         }
         input:focus, textarea:focus { border-color: var(--primary); }
@@ -115,6 +114,14 @@
         /* Grid */
         .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
         .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+
+        /* Input Groups */
+        .form-group { margin-bottom: 16px; }
+        .form-group label { display: block; margin-bottom: 8px; font-size: 0.85rem; color: var(--text-muted); font-weight: 600; }
+        
+        .input-row { display: flex; gap: 16px; margin-bottom: 16px; }
+        .input-row > div { flex: 1; }
+        .input-row label { display: block; margin-bottom: 8px; font-size: 0.75rem; color: var(--text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
 
         /* Tables */
         table { width: 100%; border-collapse: collapse; margin-top: 16px; }
@@ -177,8 +184,12 @@
         <div class="glass card auth-box">
             <h2>WhatsApp Agent Pro</h2>
             <p>Login to your workspace</p>
-            <input type="text" id="auth-user" placeholder="Username" required onkeypress="if(event.key==='Enter') login()">
-            <input type="password" id="auth-pass" placeholder="Password" required onkeypress="if(event.key==='Enter') login()">
+            <div class="form-group">
+                <input type="text" id="auth-user" placeholder="Username" required onkeypress="if(event.key==='Enter') login()">
+            </div>
+            <div class="form-group">
+                <input type="password" id="auth-pass" placeholder="Password" required onkeypress="if(event.key==='Enter') login()">
+            </div>
             <button id="btn-login" onclick="login()" style="width: 100%; margin-bottom: 12px;">Login</button>
             <button id="btn-register" onclick="register()" class="secondary" style="width: 100%;">Create Account</button>
         </div>
@@ -262,18 +273,18 @@
                     </div>
                     
                     <h3 style="margin-top: 24px;">2. Throttling & Code</h3>
-                    <div style="display: flex; gap: 16px;">
+                    <div class="input-row">
                         <div>
                             <label>Min (s)</label>
-                            <input type="number" id="delay-min" value="3">
+                            <input type="number" id="delay-min" value="3" min="1">
                         </div>
                         <div>
                             <label>Max (s)</label>
-                            <input type="number" id="delay-max" value="8">
+                            <input type="number" id="delay-max" value="8" min="1">
                         </div>
                         <div>
                             <label>Default CC</label>
-                            <input type="text" id="default-cc" value="91" placeholder="91">
+                            <input type="number" id="default-cc" value="91" placeholder="91">
                         </div>
                     </div>
                 </div>

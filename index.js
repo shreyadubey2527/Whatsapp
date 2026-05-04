@@ -179,23 +179,32 @@ function auth(req, res, next) {
 // API: Auth
 app.post('/api/auth/register', (req, res) => {
     const { username, password } = req.body;
+    console.log(`Registration attempt for: ${username}`);
     if (!username || !password) return res.status(400).json({ error: 'Missing fields' });
     const users = getUsers();
     if (users[username]) return res.status(400).json({ error: 'User exists' });
     users[username] = { password: hashPassword(password), token: crypto.randomBytes(16).toString('hex') };
     saveUsers(users);
+    console.log(`Registration successful for: ${username}`);
     res.json({ token: users[username].token, username });
 });
 
 app.post('/api/auth/login', (req, res) => {
     const { username, password } = req.body;
+    console.log(`Login attempt for: ${username}`);
     const users = getUsers();
-    if (!users[username] || users[username].password !== hashPassword(password)) {
+    if (!users[username]) {
+        console.log(`Login failed: User ${username} not found`);
+        return res.status(401).json({ error: 'Invalid credentials' });
+    }
+    if (users[username].password !== hashPassword(password)) {
+        console.log(`Login failed: Incorrect password for ${username}`);
         return res.status(401).json({ error: 'Invalid credentials' });
     }
     // Refresh token on login
     users[username].token = crypto.randomBytes(16).toString('hex');
     saveUsers(users);
+    console.log(`Login successful for: ${username}`);
     res.json({ token: users[username].token, username });
 });
 
