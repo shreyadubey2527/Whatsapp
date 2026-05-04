@@ -5,10 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>WhatsApp Agent Pro</title>
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;600;700&display=swap" rel="stylesheet">
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.28/jspdf.plugin.autotable.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js" defer></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js" defer></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js" defer></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.28/jspdf.plugin.autotable.min.js" defer></script>
     <style>
         :root {
             --bg-color: #08101e;
@@ -185,13 +185,13 @@
             <h2>WhatsApp Agent Pro</h2>
             <p>Login to your workspace</p>
             <div class="form-group">
-                <input type="text" id="auth-user" placeholder="Username" required onkeypress="if(event.key==='Enter') login()">
+                <input type="text" id="auth-user" placeholder="Username" required onkeypress="if(event.key==='Enter') handleLogin()">
             </div>
             <div class="form-group">
-                <input type="password" id="auth-pass" placeholder="Password" required onkeypress="if(event.key==='Enter') login()">
+                <input type="password" id="auth-pass" placeholder="Password" required onkeypress="if(event.key==='Enter') handleLogin()">
             </div>
-            <button id="btn-login" onclick="login()" style="width: 100%; margin-bottom: 12px;">Login</button>
-            <button id="btn-register" onclick="register()" class="secondary" style="width: 100%;">Create Account</button>
+            <button id="btn-login" onclick="handleLogin()" style="width: 100%; margin-bottom: 12px;">Login</button>
+            <button id="btn-register" onclick="handleRegister()" class="secondary" style="width: 100%;">Create Account</button>
         </div>
     </div>
 
@@ -464,7 +464,7 @@
         function showAuth() { document.getElementById('auth-screen').style.display = 'flex'; }
         function hideAuth() { document.getElementById('auth-screen').style.display = 'none'; initApp(); }
         
-        async function login() {
+        async function handleLogin() {
             const u = document.getElementById('auth-user').value;
             const p = document.getElementById('auth-pass').value;
             if (!u || !p) return toast('Username and password required', 'error');
@@ -488,7 +488,7 @@
             finally { btn.innerText = 'Login'; btn.disabled = false; }
         }
 
-        async function register() {
+        async function handleRegister() {
             const u = document.getElementById('auth-user').value;
             const p = document.getElementById('auth-pass').value;
             if (!u || !p) return toast('Username and password required', 'error');
