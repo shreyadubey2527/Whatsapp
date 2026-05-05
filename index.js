@@ -1,63 +1,94 @@
 const express = require('express');
-const { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
+const { makeWASocket, DisconnectReason, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
 const pino = require('pino');
-const fs = require('fs');
-const path = require('path');
+const mongoose = require('mongoose');
 const crypto = require('crypto');
 const qrcode = require('qrcode');
 const http = require('http');
-
 const cors = require('cors');
+const path = require('path');
+
 const app = express();
 const server = http.createServer(app);
 
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
-app.use(express.static(__dirname)); // Serve index.html and static assets
+app.use(express.static(__dirname));
 
-const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
-const SESSIONS_DIR = path.join(DATA_DIR, 'sessions');
-const CAMPAIGNS_DIR = path.join(DATA_DIR, 'campaigns');
-const HISTORY_DIR = path.join(DATA_DIR, 'history');
-const USERS_FILE = path.join(DATA_DIR, 'users.json');
+// MongoDB Connection
+const MONGODB_URI = process.env.MONGODB_URI || "mongodb+srv://shreyadubey2508_db_user:bk5ohsOFqRqYdch@cluster0.tkef1eq.mongodb.net/myDB?retryWrites=true&w=majority";
+mongoose.connect(MONGODB_URI)
+    .then(() => console.log('Connected to MongoDB Atlas'))
+    .catch(err => console.error('MongoDB connection error:', err));
 
-// Ensure directories exist with robustness
-[DATA_DIR, SESSIONS_DIR, CAMPAIGNS_DIR, HISTORY_DIR].forEach(dir => {
-    try {
-        if (!fs.existsSync(dir)) {
-            fs.mkdirSync(dir, { recursive: true });
-        }
-    } catch (err) {
-        console.warn(`Warning: Could not create/access directory ${dir}.`, err.message);
-    }
+// Schemas
+const UserSchema = new mongoose.Schema({
+    username: { type: String, unique: true, lowercase: true, trim: true },
+    password: { type: String },
+    token: { type: String }
 });
+const User = mongoose.model('User', UserSchema);
 
-try {
-    if (!fs.existsSync(USERS_FILE)) {
-        fs.writeFileSync(USERS_FILE, JSON.stringify({}));
-    }
-} catch (err) {
-    console.error(`Critical Error: Could not initialize users file ${USERS_FILE}.`, err.message);
-}
+const CampaignSchema = new mongoose.Schema({
+    username: String,
+    id: String,
+    status: String,
+    contacts: Array,
+    messageTemplate: String,
+    delayMin: Number,
+    delayMax: Number,
+    currentIndex: Number,
+    sent: Number,
+    failed: Number,
+    total: Number,
+    createdAt: { type: Date, default: Date.now }
+});
+const Campaign = mongoose.model('Campaign', CampaignSchema);
 
-// In-memory states
+const HistorySchema = new mongoose.Schema({
+    username: String,
+    to: String,
+    status: String,
+    reason: String,
+    time: { type: Date, default: Date.now },
+    campaign: String
+});
+const History = mongoose.model('History', HistorySchema);
+
+const ChatSchema = new mongoose.Schema({
+    username: String,
+    from: String,
+    pushName: String,
+    text: String,
+    time: { type: Date, default: Date.now }
+});
+const Chat = mongoose.model('Chat', ChatSchema);
+
+const SettingsSchema = new mongoose.Schema({
+    username: { type: String, unique: true },
+    autoReplyEnabled: { type: Boolean, default: false },
+    globalReply: String,
+    keywords: Array
+});
+const Settings = mongoose.model('Settings', SettingsSchema);
+
+const SessionSchema = new mongoose.Schema({
+    username: { type: String, unique: true },
+    data: String // JSON stringified auth state
+});
+const Session = mongoose.model('Session', SessionSchema);
+
+// In-memory states (Transitory)
 const userSockets = {};
 const userQRs = {};
-const userStatus = {}; // connected, connecting, disconnected
-const activeTimeouts = {}; // Store campaign timeouts to allow stopping
+const userStatus = {};
+const activeTimeouts = {};
 
 // Utils
 function hashPassword(password) {
     return crypto.createHash('sha256').update(password).digest('hex');
 }
-function getUsers() {
-    return JSON.parse(fs.readFileSync(USERS_FILE, 'utf8'));
-}
-function saveUsers(users) {
-    fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2));
-}
 
-// Spin-tax parser
 function parseSpintax(text) {
     const regex = /{([^{}]*)}/g;
     let match;
@@ -70,11 +101,94 @@ function parseSpintax(text) {
     return text;
 }
 
+// Custom MongoDB Auth State for Baileys
+async function useMongoDBAuthState(username) {
+    const session = await Session.findOne({ username });
+    let state = session ? JSON.parse(session.data) : null;
+
+    // Helper to fix Buffer types after JSON stringify/parse
+    const fixBuffers = (obj) => {
+        if (!obj) return obj;
+        if (typeof obj === 'object') {
+            if (obj.type === 'Buffer' && Array.isArray(obj.data)) {
+                return Buffer.from(obj.data);
+            }
+            for (let key in obj) {
+                obj[key] = fixBuffers(obj[key]);
+            }
+        }
+        return obj;
+    };
+
+    state = fixBuffers(state);
+
+    if (!state) {
+        state = {
+            creds: {
+                signedIn: false,
+                registrationId: Math.floor(Math.random() * 10000),
+                advSecretKey: crypto.randomBytes(32).toString('base64'),
+                nextPreKeyId: 1,
+                firstUnuploadedPreKeyId: 1,
+                accountSettings: { unarchiveChats: false },
+                deviceId: crypto.randomBytes(8).toString('hex'),
+                phoneId: crypto.randomBytes(16).toString('hex'),
+                identityId: crypto.randomBytes(20),
+                registered: false,
+                backupToken: crypto.randomBytes(20),
+                registration: {},
+                pairingEphemeralKeyPair: {
+                    public: crypto.randomBytes(32),
+                    private: crypto.randomBytes(32)
+                }
+            },
+            keys: {}
+        };
+    }
+
+    const saveCreds = async () => {
+        await Session.findOneAndUpdate(
+            { username },
+            { data: JSON.stringify(state) },
+            { upsert: true }
+        );
+    };
+
+    return {
+        state: {
+            creds: state.creds,
+            keys: {
+                get: (type, ids) => {
+                    const data = {};
+                    for (const id of ids) {
+                        let value = state.keys[type]?.[id];
+                        if (value) {
+                            data[id] = fixBuffers(value);
+                        }
+                    }
+                    return data;
+                },
+                set: (data) => {
+                    for (const type in data) {
+                        if (!state.keys[type]) state.keys[type] = {};
+                        for (const id in data[type]) {
+                            state.keys[type][id] = data[type][id];
+                        }
+                    }
+                    saveCreds();
+                }
+            }
+        },
+        saveCreds
+    };
+}
+
 // Initialize WhatsApp Session
 async function startWhatsApp(username) {
+    if (userSockets[username]) return; // Already running
+    
     userStatus[username] = 'connecting';
-    const sessionDir = path.join(SESSIONS_DIR, username);
-    const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
+    const { state, saveCreds } = await useMongoDBAuthState(username);
     const { version } = await fetchLatestBaileysVersion();
     
     const sock = makeWASocket({
@@ -105,9 +219,7 @@ async function startWhatsApp(username) {
             } else {
                 console.log(`Connection logged out for ${username}.`);
                 delete userSockets[username];
-                if (fs.existsSync(sessionDir)) {
-                    fs.rmSync(sessionDir, { recursive: true, force: true });
-                }
+                await Session.deleteOne({ username });
             }
         } else if (connection === 'open') {
             console.log(`Connected for ${username}`);
@@ -121,41 +233,30 @@ async function startWhatsApp(username) {
         if (m.type === 'notify') {
             const msg = m.messages[0];
             if (!msg.key.fromMe && msg.message) {
-                // Store message for chat modal
-                const chatHistoryFile = path.join(HISTORY_DIR, `${username}_chats.json`);
-                let chats = fs.existsSync(chatHistoryFile) ? JSON.parse(fs.readFileSync(chatHistoryFile, 'utf8')) : [];
                 const chatMsg = {
+                    username,
                     from: msg.key.remoteJid,
                     pushName: msg.pushName || 'Unknown',
                     text: msg.message.conversation || msg.message.extendedTextMessage?.text || "",
-                    time: new Date().toISOString()
                 };
-                chats.push(chatMsg);
-                if (chats.length > 100) chats.shift(); // Keep last 100
-                fs.writeFileSync(chatHistoryFile, JSON.stringify(chats, null, 2));
+                await new Chat(chatMsg).save();
 
-                const settingsFile = path.join(DATA_DIR, `${username}_settings.json`);
-                if (fs.existsSync(settingsFile)) {
-                    const settings = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
-                    if (settings.autoReplyEnabled) {
-                        const text = chatMsg.text;
-                        let replyText = settings.globalReply;
-                        
-                        if (settings.keywords && Array.isArray(settings.keywords)) {
-                            for (let kw of settings.keywords) {
-                                if (text.toLowerCase().includes(kw.word.toLowerCase())) {
-                                    replyText = kw.reply;
-                                    break;
-                                }
+                const settings = await Settings.findOne({ username });
+                if (settings && settings.autoReplyEnabled) {
+                    let replyText = settings.globalReply;
+                    if (settings.keywords) {
+                        for (let kw of settings.keywords) {
+                            if (chatMsg.text.toLowerCase().includes(kw.word.toLowerCase())) {
+                                replyText = kw.reply;
+                                break;
                             }
                         }
-                        
-                        if (replyText) {
-                            try {
-                                await sock.sendMessage(msg.key.remoteJid, { text: replyText });
-                            } catch (err) {
-                                console.error(`Auto-reply error for ${username}:`, err.message);
-                            }
+                    }
+                    if (replyText) {
+                        try {
+                            await sock.sendMessage(msg.key.remoteJid, { text: replyText });
+                        } catch (err) {
+                            console.error(`Auto-reply error for ${username}:`, err.message);
                         }
                     }
                 }
@@ -166,18 +267,14 @@ async function startWhatsApp(username) {
     userSockets[username] = sock;
 }
 
-// Auto-resume existing sessions on startup
-const existingSessions = fs.readdirSync(SESSIONS_DIR);
-existingSessions.forEach(userSession => {
-    startWhatsApp(userSession);
-});
-
 // Middleware: Authentication
-function auth(req, res, next) {
+async function auth(req, res, next) {
     const token = req.headers['authorization'];
-    const username = req.headers['x-username'];
-    const users = getUsers();
-    if (users[username] && users[username].token === token) {
+    const username = req.headers['x-username'] ? req.headers['x-username'].toLowerCase() : null;
+    if (!username) return res.status(401).json({ error: 'Unauthorized' });
+
+    const user = await User.findOne({ username, token });
+    if (user) {
         req.user = username;
         next();
     } else {
@@ -186,66 +283,64 @@ function auth(req, res, next) {
 }
 
 // API: Auth
-app.post('/api/auth/register', (req, res) => {
-    const { username, password } = req.body;
-    console.log(`Registration attempt for: ${username}`);
+app.post('/api/auth/register', async (req, res) => {
+    let { username, password } = req.body;
     if (!username || !password) return res.status(400).json({ error: 'Missing fields' });
-    const users = getUsers();
-    if (users[username]) return res.status(400).json({ error: 'User exists' });
-    users[username] = { password: hashPassword(password), token: crypto.randomBytes(16).toString('hex') };
-    saveUsers(users);
-    console.log(`Registration successful for: ${username}`);
-    res.json({ token: users[username].token, username });
+    username = username.toLowerCase().trim();
+
+    try {
+        const existing = await User.findOne({ username });
+        if (existing) return res.status(400).json({ error: 'User exists' });
+
+        const newUser = new User({
+            username,
+            password: hashPassword(password),
+            token: crypto.randomBytes(16).toString('hex')
+        });
+        await newUser.save();
+        res.json({ token: newUser.token, username });
+    } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.post('/api/auth/login', (req, res) => {
-    const { username, password } = req.body;
-    console.log(`Login attempt for: ${username}`);
-    const users = getUsers();
-    if (!users[username]) {
-        console.log(`Login failed: User ${username} not found`);
-        return res.status(401).json({ error: 'Invalid credentials' });
-    }
-    if (users[username].password !== hashPassword(password)) {
-        console.log(`Login failed: Incorrect password for ${username}`);
-        return res.status(401).json({ error: 'Invalid credentials' });
-    }
-    // Refresh token on login
-    users[username].token = crypto.randomBytes(16).toString('hex');
-    saveUsers(users);
-    console.log(`Login successful for: ${username}`);
-    res.json({ token: users[username].token, username });
+app.post('/api/auth/login', async (req, res) => {
+    let { username, password } = req.body;
+    if (!username || !password) return res.status(401).json({ error: 'Invalid credentials' });
+    username = username.toLowerCase().trim();
+
+    try {
+        const user = await User.findOne({ username });
+        if (!user || user.password !== hashPassword(password)) {
+            return res.status(401).json({ error: 'Invalid credentials' });
+        }
+        user.token = crypto.randomBytes(16).toString('hex');
+        await user.save();
+        res.json({ token: user.token, username });
+    } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // API: WhatsApp Connection
 app.get('/api/wa/status', auth, (req, res) => {
-    const username = req.user;
     res.json({
-        status: userStatus[username] || 'disconnected',
-        qr: userQRs[username] || null
+        status: userStatus[req.user] || 'disconnected',
+        qr: userQRs[req.user] || null
     });
 });
 
 app.post('/api/wa/connect', auth, (req, res) => {
-    const username = req.user;
-    if (userStatus[username] !== 'connected') {
-        startWhatsApp(username);
+    if (userStatus[req.user] !== 'connected') {
+        startWhatsApp(req.user);
     }
     res.json({ success: true });
 });
 
 app.post('/api/wa/logout', auth, async (req, res) => {
-    const username = req.user;
-    if (userSockets[username]) {
-        await userSockets[username].logout();
-        delete userSockets[username];
+    if (userSockets[req.user]) {
+        await userSockets[req.user].logout();
+        delete userSockets[req.user];
     }
-    const sessionDir = path.join(SESSIONS_DIR, username);
-    if (fs.existsSync(sessionDir)) {
-        fs.rmSync(sessionDir, { recursive: true, force: true });
-    }
-    userStatus[username] = 'disconnected';
-    userQRs[username] = null;
+    await Session.deleteOne({ username: req.user });
+    userStatus[req.user] = 'disconnected';
+    userQRs[req.user] = null;
     res.json({ success: true });
 });
 
@@ -256,8 +351,6 @@ app.post('/api/wa/validate', auth, async (req, res) => {
     if (!sock || userStatus[req.user] !== 'connected') {
         return res.status(400).json({ error: 'WhatsApp not connected' });
     }
-    
-    // Batch validation for speed
     const BATCH_SIZE = 5;
     const results = [];
     for (let i = 0; i < numbers.length; i += BATCH_SIZE) {
@@ -267,223 +360,163 @@ app.post('/api/wa/validate', auth, async (req, res) => {
                 const jid = num.includes('@s.whatsapp.net') ? num : `${num}@s.whatsapp.net`;
                 const [result] = await sock.onWhatsApp(jid);
                 return { number: num, valid: result?.exists || false, jid: result?.jid || null };
-            } catch (e) {
-                return { number: num, valid: false, error: e.message };
-            }
+            } catch (e) { return { number: num, valid: false, error: e.message }; }
         }));
         results.push(...batchResults);
     }
     res.json(results);
 });
 
-// API: Auto-reply Settings
-app.get('/api/wa/auto-reply', auth, (req, res) => {
-    const settingsFile = path.join(DATA_DIR, `${req.user}_settings.json`);
-    if (fs.existsSync(settingsFile)) {
-        res.json(JSON.parse(fs.readFileSync(settingsFile, 'utf8')));
-    } else {
-        res.json({ autoReplyEnabled: false, globalReply: '', keywords: [] });
-    }
+// API: Auto-reply
+app.get('/api/wa/auto-reply', auth, async (req, res) => {
+    const settings = await Settings.findOne({ username: req.user });
+    res.json(settings || { autoReplyEnabled: false, globalReply: '', keywords: [] });
 });
 
-app.post('/api/wa/auto-reply', auth, (req, res) => {
-    const settingsFile = path.join(DATA_DIR, `${req.user}_settings.json`);
-    fs.writeFileSync(settingsFile, JSON.stringify(req.body, null, 2));
+app.post('/api/wa/auto-reply', auth, async (req, res) => {
+    await Settings.findOneAndUpdate(
+        { username: req.user },
+        { ...req.body, username: req.user },
+        { upsert: true }
+    );
     res.json({ success: true });
 });
 
 // Campaign Executor
 async function runCampaign(username, campaignId) {
-    const campaignFile = path.join(CAMPAIGNS_DIR, `${username}_${campaignId}.json`);
-    if (!fs.existsSync(campaignFile)) return;
-    
-    const campaign = JSON.parse(fs.readFileSync(campaignFile, 'utf8'));
-    if (campaign.status !== 'running') return;
-    
+    const campaign = await Campaign.findOne({ username, id: campaignId });
+    if (!campaign || campaign.status !== 'running') return;
+
     const sock = userSockets[username];
     if (!sock || userStatus[username] !== 'connected') {
         campaign.status = 'paused';
-        fs.writeFileSync(campaignFile, JSON.stringify(campaign, null, 2));
+        await campaign.save();
         return;
     }
-    
-    const historyFile = path.join(HISTORY_DIR, `${username}_history.json`);
-    let history = fs.existsSync(historyFile) ? JSON.parse(fs.readFileSync(historyFile, 'utf8')) : [];
-    
-    // Resume from current index
+
     const processNext = async () => {
-        const currentData = JSON.parse(fs.readFileSync(campaignFile, 'utf8'));
-        if (currentData.status !== 'running') return; // Stopped by user
-        
+        const currentData = await Campaign.findOne({ username, id: campaignId });
+        if (!currentData || currentData.status !== 'running') return;
+
         if (currentData.currentIndex >= currentData.contacts.length) {
             currentData.status = 'completed';
-            fs.writeFileSync(campaignFile, JSON.stringify(currentData, null, 2));
+            await currentData.save();
             return;
         }
-        
+
         const contact = currentData.contacts[currentData.currentIndex];
         let message = currentData.messageTemplate;
-        
-        // Template replacement
         for (let key in contact) {
             message = message.replace(new RegExp(`{{${key}}}`, 'gi'), contact[key] || '');
         }
         message = parseSpintax(message);
 
-        // Ensure phone is clean (only digits)
-        const cleanPhone = contact.phone.toString().replace(/\D/g, '');
-        const jid = `${cleanPhone}@s.whatsapp.net`;
-        
-        // Re-verify socket for every message
+        const jid = `${contact.phone.toString().replace(/\D/g, '')}@s.whatsapp.net`;
         const currentSock = userSockets[username];
         if (!currentSock || userStatus[username] !== 'connected') {
-            console.log(`Socket disconnected for ${username}, pausing campaign ${campaignId}`);
             currentData.status = 'paused';
-            fs.writeFileSync(campaignFile, JSON.stringify(currentData, null, 2));
+            await currentData.save();
             return;
         }
 
         try {
-            console.log(`[Campaign ${campaignId}] Sending to ${jid}...`);
             await currentSock.sendMessage(jid, { text: message });
             currentData.sent++;
-            history.push({ to: contact.phone, status: 'sent', time: new Date().toISOString(), campaign: campaignId });
+            await new History({ username, to: contact.phone, status: 'sent', campaign: campaignId }).save();
         } catch (err) {
-            console.error(`[Campaign ${campaignId}] Send failed to ${jid}:`, err.message);
             currentData.failed++;
             const errReason = err.message || "Failed";
-            const isBanned = errReason.toLowerCase().includes('403') || errReason.toLowerCase().includes('forbidden') || errReason.toLowerCase().includes('not-authorized') || errReason.toLowerCase().includes('closed');
-            history.push({ 
-                to: contact.phone, 
+            const isBanned = errReason.toLowerCase().includes('403') || errReason.toLowerCase().includes('forbidden');
+            await new History({ 
+                username, to: contact.phone, 
                 status: isBanned ? 'BANNED' : 'failed', 
-                reason: errReason,
-                time: new Date().toISOString(), 
-                campaign: campaignId 
-            });
+                reason: errReason, campaign: campaignId 
+            }).save();
         }
-        
+
         currentData.currentIndex++;
-        fs.writeFileSync(campaignFile, JSON.stringify(currentData, null, 2));
-        fs.writeFileSync(historyFile, JSON.stringify(history, null, 2));
-        
+        await currentData.save();
+
         if (currentData.currentIndex < currentData.contacts.length) {
             const delayMs = Math.floor(Math.random() * (currentData.delayMax - currentData.delayMin + 1)) + currentData.delayMin;
             activeTimeouts[`${username}_${campaignId}`] = setTimeout(processNext, delayMs * 1000);
         } else {
             currentData.status = 'completed';
-            fs.writeFileSync(campaignFile, JSON.stringify(currentData, null, 2));
+            await currentData.save();
         }
     };
-    
     processNext();
 }
 
-// API: Campaign
-app.post('/api/campaign/start', auth, (req, res) => {
-    const username = req.user;
-    const { contacts, messageTemplate, delayMin, delayMax } = req.body;
-    
+app.post('/api/campaign/start', auth, async (req, res) => {
     const campaignId = Date.now().toString();
-    const campaign = {
+    const campaign = new Campaign({
+        username: req.user,
         id: campaignId,
-        status: 'running', // running, paused, completed, stopped
-        contacts,
-        messageTemplate,
-        delayMin: parseInt(delayMin) || 2,
-        delayMax: parseInt(delayMax) || 5,
-        currentIndex: 0,
-        sent: 0,
-        failed: 0,
-        total: contacts.length,
-        createdAt: new Date().toISOString()
-    };
-    
-    const campaignFile = path.join(CAMPAIGNS_DIR, `${username}_${campaignId}.json`);
-    fs.writeFileSync(campaignFile, JSON.stringify(campaign, null, 2));
-    
-    runCampaign(username, campaignId);
+        status: 'running',
+        ...req.body,
+        currentIndex: 0, sent: 0, failed: 0,
+        total: req.body.contacts.length
+    });
+    await campaign.save();
+    runCampaign(req.user, campaignId);
     res.json({ success: true, campaignId });
 });
 
-app.post('/api/campaign/action', auth, (req, res) => {
-    const { campaignId, action } = req.body; // action: pause, resume, stop
-    const username = req.user;
-    const campaignFile = path.join(CAMPAIGNS_DIR, `${username}_${campaignId}.json`);
-    
-    if (fs.existsSync(campaignFile)) {
-        const campaign = JSON.parse(fs.readFileSync(campaignFile, 'utf8'));
+app.post('/api/campaign/action', auth, async (req, res) => {
+    const { campaignId, action } = req.body;
+    const campaign = await Campaign.findOne({ username: req.user, id: campaignId });
+    if (campaign) {
         if (action === 'resume') {
             campaign.status = 'running';
-            fs.writeFileSync(campaignFile, JSON.stringify(campaign, null, 2));
-            runCampaign(username, campaignId);
+            await campaign.save();
+            runCampaign(req.user, campaignId);
         } else {
             campaign.status = action === 'stop' ? 'stopped' : 'paused';
-            fs.writeFileSync(campaignFile, JSON.stringify(campaign, null, 2));
-            if (activeTimeouts[`${username}_${campaignId}`]) {
-                clearTimeout(activeTimeouts[`${username}_${campaignId}`]);
-            }
+            await campaign.save();
+            if (activeTimeouts[`${req.user}_${campaignId}`]) clearTimeout(activeTimeouts[`${req.user}_${campaignId}`]);
         }
         res.json({ success: true, status: campaign.status });
-    } else {
-        res.status(404).json({ error: 'Campaign not found' });
-    }
+    } else { res.status(404).json({ error: 'Campaign not found' }); }
 });
 
-app.get('/api/campaigns', auth, (req, res) => {
-    const username = req.user;
-    const files = fs.readdirSync(CAMPAIGNS_DIR).filter(f => f.startsWith(`${username}_`));
-    const campaigns = files.map(f => {
-        return JSON.parse(fs.readFileSync(path.join(CAMPAIGNS_DIR, f), 'utf8'));
-    }).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+app.get('/api/campaigns', auth, async (req, res) => {
+    const campaigns = await Campaign.find({ username: req.user }).sort({ createdAt: -1 });
     res.json(campaigns);
 });
 
-// API: Analytics
-app.get('/api/analytics', auth, (req, res) => {
-    const username = req.user;
-    const historyFile = path.join(HISTORY_DIR, `${username}_history.json`);
-    let history = fs.existsSync(historyFile) ? JSON.parse(fs.readFileSync(historyFile, 'utf8')) : [];
-    
+app.get('/api/analytics', auth, async (req, res) => {
+    const history = await History.find({ username: req.user });
     const stats = {
         totalSent: history.filter(h => h.status === 'sent').length,
         totalFailed: history.filter(h => h.status === 'failed' || h.status === 'BANNED').length,
         totalBanned: history.filter(h => h.status === 'BANNED').length,
-        history: history.slice(-100) // latest 100
+        history: history.slice(-100)
     };
     res.json(stats);
 });
 
-// API: Chat History
-app.get('/api/wa/chats', auth, (req, res) => {
-    const chatHistoryFile = path.join(HISTORY_DIR, `${req.user}_chats.json`);
-    if (fs.existsSync(chatHistoryFile)) {
-        res.json(JSON.parse(fs.readFileSync(chatHistoryFile, 'utf8')));
-    } else {
-        res.json([]);
+app.get('/api/wa/chats', auth, async (req, res) => {
+    const chats = await Chat.find({ username: req.user }).sort({ time: -1 }).limit(100);
+    res.json(chats);
+});
+
+// Self-ping
+setInterval(() => { http.get(`http://localhost:${process.env.PORT || 3000}`); }, 14 * 60 * 1000);
+
+// Auto-resume on startup
+mongoose.connection.once('open', async () => {
+    console.log('Auto-resuming campaigns and sessions...');
+    const campaigns = await Campaign.find({ status: 'running' });
+    for (const c of campaigns) {
+        startWhatsApp(c.username);
+        setTimeout(() => runCampaign(c.username, c.id), 15000);
+    }
+    const sessions = await Session.find({});
+    for (const s of sessions) {
+        startWhatsApp(s.username);
     }
 });
 
-// Self-ping for Render.com to keep alive
-setInterval(() => {
-    http.get(`http://localhost:${process.env.PORT || 3000}`);
-}, 14 * 60 * 1000);
-
-// Auto-resume Campaigns on startup after a delay to let sockets connect
-setTimeout(() => {
-    const campaignFiles = fs.readdirSync(CAMPAIGNS_DIR);
-    campaignFiles.forEach(file => {
-        try {
-            const campaign = JSON.parse(fs.readFileSync(path.join(CAMPAIGNS_DIR, file), 'utf8'));
-            if (campaign.status === 'running') {
-                const username = file.split('_')[0];
-                console.log(`Auto-resuming campaign ${campaign.id} for ${username}`);
-                runCampaign(username, campaign.id);
-            }
-        } catch(e) {}
-    });
-}, 15000);
-
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
-});
+server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
