@@ -16,7 +16,7 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.static(__dirname));
 
 // MongoDB Connection
-const MONGODB_URI = process.env.MONGODB_URI || "mongodb+srv://shreyadubey2508_db_user:bk5ohsOFqRqYdch@cluster0.tkef1eq.mongodb.net/myDB?retryWrites=true&w=majority";
+const MONGODB_URI = process.env.MONGODB_URI || "mongodb+srv://shreyadubey2508:shreyabhi2527@cluster0.tkef1eq.mongodb.net/myDB?retryWrites=true&w=majority";
 mongoose.connect(MONGODB_URI)
     .then(() => console.log('Connected to MongoDB Atlas'))
     .catch(err => console.error('MongoDB connection error:', err));
@@ -186,11 +186,11 @@ async function useMongoDBAuthState(username) {
 // Initialize WhatsApp Session
 async function startWhatsApp(username) {
     if (userSockets[username]) return; // Already running
-    
+
     userStatus[username] = 'connecting';
     const { state, saveCreds } = await useMongoDBAuthState(username);
     const { version } = await fetchLatestBaileysVersion();
-    
+
     const sock = makeWASocket({
         version,
         auth: state,
@@ -198,21 +198,21 @@ async function startWhatsApp(username) {
         printQRInTerminal: false,
         browser: ['WhatsApp Agent Pro', 'Desktop', '1.0.0']
     });
-    
+
     sock.ev.on('creds.update', saveCreds);
-    
+
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
-        
+
         if (qr) {
             userQRs[username] = await qrcode.toDataURL(qr);
         }
-        
+
         if (connection === 'close') {
             userQRs[username] = null;
             userStatus[username] = 'disconnected';
             const shouldReconnect = (lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut);
-            
+
             if (shouldReconnect) {
                 console.log(`Connection closed for ${username}, reconnecting...`);
                 setTimeout(() => startWhatsApp(username), 5000);
@@ -427,10 +427,10 @@ async function runCampaign(username, campaignId) {
             currentData.failed++;
             const errReason = err.message || "Failed";
             const isBanned = errReason.toLowerCase().includes('403') || errReason.toLowerCase().includes('forbidden');
-            await new History({ 
-                username, to: contact.phone, 
-                status: isBanned ? 'BANNED' : 'failed', 
-                reason: errReason, campaign: campaignId 
+            await new History({
+                username, to: contact.phone,
+                status: isBanned ? 'BANNED' : 'failed',
+                reason: errReason, campaign: campaignId
             }).save();
         }
 
