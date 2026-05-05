@@ -1,5 +1,5 @@
 const express = require('express');
-const { makeWASocket, DisconnectReason, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
+const { makeWASocket, DisconnectReason, fetchLatestBaileysVersion, initAuthCreds } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const mongoose = require('mongoose');
 const crypto = require('crypto');
@@ -124,24 +124,7 @@ async function useMongoDBAuthState(username) {
 
     if (!state) {
         state = {
-            creds: {
-                signedIn: false,
-                registrationId: Math.floor(Math.random() * 10000),
-                advSecretKey: crypto.randomBytes(32).toString('base64'),
-                nextPreKeyId: 1,
-                firstUnuploadedPreKeyId: 1,
-                accountSettings: { unarchiveChats: false },
-                deviceId: crypto.randomBytes(8).toString('hex'),
-                phoneId: crypto.randomBytes(16).toString('hex'),
-                identityId: crypto.randomBytes(20),
-                registered: false,
-                backupToken: crypto.randomBytes(20),
-                registration: {},
-                pairingEphemeralKeyPair: {
-                    public: crypto.randomBytes(32),
-                    private: crypto.randomBytes(32)
-                }
-            },
+            creds: initAuthCreds(),
             keys: {}
         };
     }
