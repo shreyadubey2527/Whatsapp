@@ -1,3 +1,9 @@
+// Fix: Override DNS to use Google's public servers (avoids querySrv ENOTFOUND on Windows)
+const dns = require('dns');
+const dnsPromises = require('dns').promises;
+dns.setServers(['8.8.8.8', '1.1.1.1']);
+dnsPromises.setServers(['8.8.8.8', '1.1.1.1']);
+
 const express = require('express');
 const { makeWASocket, DisconnectReason, fetchLatestBaileysVersion, initAuthCreds } = require('@whiskeysockets/baileys');
 const pino = require('pino');
@@ -168,7 +174,8 @@ async function useMongoDBAuthState(username) {
 
 // Initialize WhatsApp Session
 async function startWhatsApp(username) {
-    if (userSockets[username]) return; // Already running
+    if (userStatus[username] === 'connected') return; // Already connected
+    if (userStatus[username] === 'connecting') return; // Already trying to connect
 
     userStatus[username] = 'connecting';
     const { state, saveCreds } = await useMongoDBAuthState(username);
@@ -194,6 +201,7 @@ async function startWhatsApp(username) {
         if (connection === 'close') {
             userQRs[username] = null;
             userStatus[username] = 'disconnected';
+            delete userSockets[username]; // Always clear so guard allows restart
             const shouldReconnect = (lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut);
 
             if (shouldReconnect) {
@@ -201,7 +209,6 @@ async function startWhatsApp(username) {
                 setTimeout(() => startWhatsApp(username), 5000);
             } else {
                 console.log(`Connection logged out for ${username}.`);
-                delete userSockets[username];
                 await Session.deleteOne({ username });
             }
         } else if (connection === 'open') {
@@ -246,22 +253,25 @@ async function startWhatsApp(username) {
             }
         }
     });
-
-    userSockets[username] = sock;
 }
 
 // Middleware: Authentication
 async function auth(req, res, next) {
-    const token = req.headers['authorization'];
-    const username = req.headers['x-username'] ? req.headers['x-username'].toLowerCase() : null;
-    if (!username) return res.status(401).json({ error: 'Unauthorized' });
+    try {
+        const token = req.headers['authorization'];
+        const username = req.headers['x-username'] ? req.headers['x-username'].toLowerCase() : null;
+        if (!username || !token) return res.status(401).json({ error: 'Unauthorized' });
 
-    const user = await User.findOne({ username, token });
-    if (user) {
-        req.user = username;
-        next();
-    } else {
-        res.status(401).json({ error: 'Unauthorized' });
+        const user = await User.findOne({ username, token });
+        if (user) {
+            req.user = username;
+            next();
+        } else {
+            res.status(401).json({ error: 'Unauthorized' });
+        }
+    } catch (err) {
+        console.error('Auth middleware error:', err.message);
+        res.status(500).json({ error: 'Server error during authentication' });
     }
 }
 
