@@ -1,4 +1,4 @@
-require('dotenv').config();
+require('dotenv').config({ path: require('path').resolve(__dirname, '.env') });
 // Environment configuration
 const dns = require('dns');
 const dnsPromises = require('dns').promises;
@@ -196,9 +196,8 @@ async function startWhatsApp(username) {
         version,
         auth: state,
         logger: pino({ level: 'silent' }),
-        printQRInTerminal: true, // Show in console as backup
         browser: ['Ubuntu', 'Chrome', '20.0.04'],
-        connectTimeoutMs: 120000, // 2 minutes timeout
+        connectTimeoutMs: 120000,
         defaultQueryTimeoutMs: 60000,
         keepAliveIntervalMs: 15000,
         generateHighQualityQR: true
@@ -210,8 +209,10 @@ async function startWhatsApp(username) {
         const { connection, lastDisconnect, qr } = update;
 
         if (qr) {
-            console.log(`[WA] QR Code generated for ${username}`);
+            console.log(`[WA] QR Code generated for ${username}. Scan this to connect:`);
             userQRs[username] = await qrcode.toDataURL(qr);
+            // Manually print to terminal since option is deprecated
+            require('qrcode-terminal').generate(qr, { small: true });
         }
 
         if (connection === 'close') {
@@ -221,10 +222,10 @@ async function startWhatsApp(username) {
             delete userSockets[username];
             
             const isLoggedOut = statusCode === DisconnectReason.loggedOut;
-            const isStreamError = statusCode === 440 || statusCode === 408;
+            const isStreamError = statusCode === 440 || statusCode === 408 || statusCode === 403;
 
             if (isLoggedOut || isStreamError) {
-                console.log(`Session expired or logged out for ${username} (Status: ${statusCode}). Clearing session.`);
+                console.log(`Session expired, blocked, or logged out for ${username} (Status: ${statusCode}). Clearing session.`);
                 await Session.deleteOne({ username });
                 if (isStreamError) setTimeout(() => startWhatsApp(username), 5000);
             } else {
