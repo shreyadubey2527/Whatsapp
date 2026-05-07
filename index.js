@@ -1,3 +1,4 @@
+require('dotenv').config();
 // Environment configuration
 const dns = require('dns');
 const dnsPromises = require('dns').promises;
