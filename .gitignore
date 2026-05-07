@@ -1,8 +1,5 @@
-node_modules/
-data/sessions/
-data/campaigns/
-data/history/
-data/users.json
+sessions/
+data/
 *.log
 .DS_Store
 .env
