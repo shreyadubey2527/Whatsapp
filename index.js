@@ -1,8 +1,7 @@
-// Fix: Override DNS to use Google's public servers (avoids querySrv ENOTFOUND on Windows)
+// Environment configuration
 const dns = require('dns');
 const dnsPromises = require('dns').promises;
-dns.setServers(['8.8.8.8', '1.1.1.1']);
-dnsPromises.setServers(['8.8.8.8', '1.1.1.1']);
+// dns.setServers(['8.8.8.8', '1.1.1.1']); // Commented out to prevent network-specific timeouts
 
 const express = require('express');
 const { makeWASocket, DisconnectReason, fetchLatestBaileysVersion, initAuthCreds } = require('@whiskeysockets/baileys');
@@ -109,8 +108,10 @@ function parseSpintax(text) {
 
 // Custom MongoDB Auth State for Baileys
 async function useMongoDBAuthState(username) {
+    console.log(`[Auth] Loading session for ${username}...`);
     const session = await Session.findOne({ username });
     let state = session ? JSON.parse(session.data) : null;
+    console.log(`[Auth] Session ${session ? 'found' : 'not found'} for ${username}`);
 
     // Helper to fix Buffer types after JSON stringify/parse
     const fixBuffers = (obj) => {
@@ -179,14 +180,27 @@ async function startWhatsApp(username) {
 
     userStatus[username] = 'connecting';
     const { state, saveCreds } = await useMongoDBAuthState(username);
-    const { version } = await fetchLatestBaileysVersion();
+    
+    let version = [2, 3000, 1015901307];
+    try {
+        const fetched = await fetchLatestBaileysVersion();
+        version = fetched.version;
+        console.log(`[WA] Using latest version: ${version}`);
+    } catch (e) {
+        console.log("[WA] Failed to fetch latest version, using stable fallback");
+    }
 
+    console.log(`[WA] Initializing socket for ${username}...`);
     const sock = makeWASocket({
         version,
         auth: state,
         logger: pino({ level: 'silent' }),
-        printQRInTerminal: false,
-        browser: ['WhatsApp Agent Pro', 'Desktop', '1.0.0']
+        printQRInTerminal: true, // Show in console as backup
+        browser: ['Ubuntu', 'Chrome', '20.0.04'],
+        connectTimeoutMs: 120000, // 2 minutes timeout
+        defaultQueryTimeoutMs: 60000,
+        keepAliveIntervalMs: 15000,
+        generateHighQualityQR: true
     });
 
     sock.ev.on('creds.update', saveCreds);
@@ -195,21 +209,26 @@ async function startWhatsApp(username) {
         const { connection, lastDisconnect, qr } = update;
 
         if (qr) {
+            console.log(`[WA] QR Code generated for ${username}`);
             userQRs[username] = await qrcode.toDataURL(qr);
         }
 
         if (connection === 'close') {
+            const statusCode = lastDisconnect?.error?.output?.statusCode;
             userQRs[username] = null;
             userStatus[username] = 'disconnected';
-            delete userSockets[username]; // Always clear so guard allows restart
-            const shouldReconnect = (lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut);
+            delete userSockets[username];
+            
+            const isLoggedOut = statusCode === DisconnectReason.loggedOut;
+            const isStreamError = statusCode === 440 || statusCode === 408;
 
-            if (shouldReconnect) {
-                console.log(`Connection closed for ${username}, reconnecting...`);
-                setTimeout(() => startWhatsApp(username), 5000);
-            } else {
-                console.log(`Connection logged out for ${username}.`);
+            if (isLoggedOut || isStreamError) {
+                console.log(`Session expired or logged out for ${username} (Status: ${statusCode}). Clearing session.`);
                 await Session.deleteOne({ username });
+                if (isStreamError) setTimeout(() => startWhatsApp(username), 5000);
+            } else {
+                console.log(`Connection closed for ${username} (Status: ${statusCode}), reconnecting...`);
+                setTimeout(() => startWhatsApp(username), 10000);
             }
         } else if (connection === 'open') {
             console.log(`Connected for ${username}`);
